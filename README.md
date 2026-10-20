@@ -5,6 +5,8 @@
 ## Текущие возможности
 
 - Запуск HTTP-сервера на порту 8080.
+- Создание товара через `POST /api/products` и просмотр через `GET /api/products/{id}`.
+- Проверка названия (1–120 символов, не только пробелы) и целого неотрицательного остатка.
 - Хранение названия и количества товара в PostgreSQL через JPA.
 - Создание схемы базы данных миграциями Flyway.
 - Запрет отрицательных остатков и пустых названий на уровне базы данных.
@@ -35,6 +37,20 @@ export DB_PASSWORD='local-password'
 mvn -DskipTests clean package
 java -jar target/stockreserve-0.0.1-SNAPSHOT.jar
 ```
+
+Создание товара:
+
+```bash
+curl -i -X POST http://localhost:8080/api/products \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"Keyboard","quantity":5}'
+```
+
+Ответ `201 Created` содержит `id`, `name`, `quantity` и заголовок `Location` с адресом товара.
+Пробелы по краям названия удаляются.
+
+Для просмотра выполните `GET` по адресу из `Location`.
+Неверные данные возвращают `400 Bad Request`, неизвестный товар — `404 Not Found`.
 
 Проверка состояния:
 
