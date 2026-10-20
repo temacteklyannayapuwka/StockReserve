@@ -42,6 +42,13 @@ public class Product {
         return true;
     }
 
+    public void release(int amount) {
+        if (amount <= 0) {
+            throw new IllegalArgumentException("Released quantity must be positive");
+        }
+        quantity = Math.addExact(quantity, amount);
+    }
+
     public UUID getId() {
         return id;
     }

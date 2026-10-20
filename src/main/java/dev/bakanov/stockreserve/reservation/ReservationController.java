@@ -28,6 +28,16 @@ public class ReservationController {
         return ResponseEntity.created(URI.create("/api/reservations/" + reservation.id())).body(reservation);
     }
 
+    @PostMapping("/{id}/confirm")
+    public ReservationResponse confirm(@PathVariable UUID id) {
+        return reservations.confirm(id);
+    }
+
+    @PostMapping("/{id}/cancel")
+    public ReservationResponse cancel(@PathVariable UUID id) {
+        return reservations.cancel(id);
+    }
+
     @GetMapping("/{id}")
     public ReservationResponse findById(@PathVariable UUID id) {
         return reservations.findById(id);

@@ -227,6 +227,188 @@ class ReservationApiTest {
         }
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"confirm", "cancel"})
+    void finishesReservationAndSafelyRepeatsSameAction(String action) {
+        var product = products.saveAndFlush(new Product("Keyboard", 5));
+        var reservation = service.create(new CreateReservationRequest(product.getId(), UUID.randomUUID(), 2));
+        String path = "/api/reservations/" + reservation.id() + "/" + action;
+        var expectedStatus = action.equals("cancel") ? ReservationStatus.CANCELLED : ReservationStatus.CONFIRMED;
+        int expectedStock = action.equals("cancel") ? 5 : 3;
+
+        var first = http.postForEntity(path, null, ReservationResponse.class);
+        var repeated = http.postForEntity(path, null, ReservationResponse.class);
+
+        assertThat(first.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(first.getBody()).isNotNull();
+        assertThat(first.getBody().status()).isEqualTo(expectedStatus);
+        assertThat(first.getBody().id()).isEqualTo(reservation.id());
+        assertThat(repeated.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(repeated.getBody()).isEqualTo(first.getBody());
+        var loaded = http.getForEntity("/api/reservations/" + reservation.id(), ReservationResponse.class);
+        assertThat(loaded.getBody()).isEqualTo(first.getBody());
+        assertThat(products.findById(product.getId()).orElseThrow().getQuantity()).isEqualTo(expectedStock);
+        assertThat(reservations.count()).isEqualTo(1);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"confirm", "cancel"})
+    void rejectsOppositeActionAfterReservationIsFinished(String firstAction) {
+        var product = products.saveAndFlush(new Product("Keyboard", 5));
+        var reservation = service.create(new CreateReservationRequest(product.getId(), UUID.randomUUID(), 2));
+        String prefix = "/api/reservations/" + reservation.id() + "/";
+        String opposite = firstAction.equals("confirm") ? "cancel" : "confirm";
+        var first = http.postForEntity(prefix + firstAction, null, ReservationResponse.class);
+        assertThat(first.getStatusCode()).isEqualTo(HttpStatus.OK);
+
+        var response = http.postForEntity(prefix + opposite, null, JsonNode.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.CONFLICT);
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().path("status").asInt()).isEqualTo(409);
+        assertThat(service.findById(reservation.id())).isEqualTo(first.getBody());
+        assertThat(products.findById(product.getId()).orElseThrow().getQuantity())
+                .isEqualTo(firstAction.equals("cancel") ? 5 : 3);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"confirm", "cancel"})
+    void finishingUnknownReservationReturnsNotFound(String action) {
+        var response = http.postForEntity("/api/reservations/" + UUID.randomUUID() + "/" + action,
+                null, JsonNode.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.NOT_FOUND);
+        assertThat(response.getBody()).isNotNull();
+        assertThat(response.getBody().path("detail").asText()).isEqualTo("Reservation not found");
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"confirm", "cancel"})
+    void finishingMalformedReservationIdReturnsBadRequest(String action) {
+        var response = http.postForEntity("/api/reservations/broken/" + action, null, JsonNode.class);
+
+        assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"confirm", "cancel"})
+    void rollbackRestoresActiveReservationAndStock(String action) {
+        var product = products.saveAndFlush(new Product("Keyboard", 5));
+        var reservation = service.create(new CreateReservationRequest(product.getId(), UUID.randomUUID(), 2));
+
+        assertThatThrownBy(() -> new TransactionTemplate(transactions).executeWithoutResult(status -> {
+            if (action.equals("confirm")) {
+                service.confirm(reservation.id());
+            } else {
+                service.cancel(reservation.id());
+            }
+            entityManager.flush();
+            throw new IllegalStateException("Transaction aborted");
+        })).isInstanceOf(IllegalStateException.class).hasMessage("Transaction aborted");
+
+        assertThat(service.findById(reservation.id()).status()).isEqualTo(ReservationStatus.ACTIVE);
+        assertThat(products.findById(product.getId()).orElseThrow().getQuantity()).isEqualTo(3);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"confirm", "cancel"})
+    void concurrentRepeatsApplyActionOnlyOnce(String action) throws Exception {
+        var product = products.saveAndFlush(new Product("Keyboard", 5));
+        var reservation = service.create(new CreateReservationRequest(product.getId(), UUID.randomUUID(), 2));
+        String path = "/api/reservations/" + reservation.id() + "/" + action;
+
+        var responses = finishConcurrently(java.util.Collections.nCopies(10, path));
+
+        assertThat(responses).allSatisfy(response ->
+                assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK));
+        var expectedStatus = action.equals("cancel") ? ReservationStatus.CANCELLED : ReservationStatus.CONFIRMED;
+        assertThat(service.findById(reservation.id()).status()).isEqualTo(expectedStatus);
+        assertThat(products.findById(product.getId()).orElseThrow().getQuantity())
+                .isEqualTo(action.equals("cancel") ? 5 : 3);
+        assertThat(reservations.count()).isEqualTo(1);
+    }
+
+    @Test
+    void concurrentConfirmationAndCancellationChooseSingleOutcome() throws Exception {
+        var product = products.saveAndFlush(new Product("Keyboard", 5));
+        var reservation = service.create(new CreateReservationRequest(product.getId(), UUID.randomUUID(), 2));
+        String prefix = "/api/reservations/" + reservation.id();
+
+        var responses = finishConcurrently(List.of(prefix + "/confirm", prefix + "/cancel"));
+
+        assertThat(responses.stream().map(response -> response.getStatusCode().value()).toList())
+                .containsExactlyInAnyOrder(200, 409);
+        var finalStatus = service.findById(reservation.id()).status();
+        assertThat(finalStatus).isIn(ReservationStatus.CONFIRMED, ReservationStatus.CANCELLED);
+        assertThat(products.findById(product.getId()).orElseThrow().getQuantity())
+                .isEqualTo(finalStatus == ReservationStatus.CANCELLED ? 5 : 3);
+    }
+
+    @Test
+    void concurrentCancellationOfDifferentReservationsRestoresEntireStock() throws Exception {
+        var product = products.saveAndFlush(new Product("Keyboard", 5));
+        var first = service.create(new CreateReservationRequest(product.getId(), UUID.randomUUID(), 2));
+        var second = service.create(new CreateReservationRequest(product.getId(), UUID.randomUUID(), 3));
+
+        var responses = finishConcurrently(List.of(
+                "/api/reservations/" + first.id() + "/cancel",
+                "/api/reservations/" + second.id() + "/cancel"));
+
+        assertThat(responses).allSatisfy(response ->
+                assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK));
+        assertThat(service.findById(first.id()).status()).isEqualTo(ReservationStatus.CANCELLED);
+        assertThat(service.findById(second.id()).status()).isEqualTo(ReservationStatus.CANCELLED);
+        assertThat(products.findById(product.getId()).orElseThrow().getQuantity()).isEqualTo(5);
+    }
+
+    @ParameterizedTest
+    @ValueSource(ints = {5, Integer.MAX_VALUE})
+    void cancelledStockCanBeReservedAgain(int stock) {
+        var product = products.saveAndFlush(new Product("Keyboard", stock));
+        var first = service.create(new CreateReservationRequest(product.getId(), UUID.randomUUID(), 2));
+
+        var cancelled = http.postForEntity("/api/reservations/" + first.id() + "/cancel",
+                null, ReservationResponse.class);
+        assertThat(cancelled.getStatusCode()).isEqualTo(HttpStatus.OK);
+        assertThat(products.findById(product.getId()).orElseThrow().getQuantity()).isEqualTo(stock);
+        var second = http.postForEntity("/api/reservations",
+                new CreateReservationRequest(product.getId(), UUID.randomUUID(), stock),
+                ReservationResponse.class);
+
+        assertThat(second.getStatusCode()).isEqualTo(HttpStatus.CREATED);
+        assertThat(products.findById(product.getId()).orElseThrow().getQuantity()).isZero();
+        assertThat(reservations.count()).isEqualTo(2);
+    }
+
+    private List<ResponseEntity<JsonNode>> finishConcurrently(List<String> paths) throws Exception {
+        var executor = Executors.newFixedThreadPool(paths.size());
+        var ready = new CountDownLatch(paths.size());
+        var start = new CountDownLatch(1);
+        List<Future<ResponseEntity<JsonNode>>> pending = new ArrayList<>();
+        try {
+            for (var path : paths) {
+                pending.add(executor.submit(() -> {
+                    ready.countDown();
+                    if (!start.await(10, TimeUnit.SECONDS)) {
+                        throw new IllegalStateException("Start signal timed out");
+                    }
+                    return http.postForEntity(path, null, JsonNode.class);
+                }));
+            }
+            assertThat(ready.await(10, TimeUnit.SECONDS)).isTrue();
+            start.countDown();
+            List<ResponseEntity<JsonNode>> responses = new ArrayList<>();
+            for (var result : pending) {
+                responses.add(result.get(20, TimeUnit.SECONDS));
+            }
+            return responses;
+        } finally {
+            start.countDown();
+            executor.shutdownNow();
+            assertThat(executor.awaitTermination(10, TimeUnit.SECONDS)).isTrue();
+        }
+    }
+
     static Stream<String> invalidRequests() {
         String fields = "\"productId\":\"PRODUCT_ID\",\"orderId\":\"00000000-0000-0000-0000-000000000001\"";
         return Stream.of(

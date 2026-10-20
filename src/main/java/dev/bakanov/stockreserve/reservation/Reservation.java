@@ -42,6 +42,22 @@ public class Reservation {
         this.status = ReservationStatus.ACTIVE;
     }
 
+    public boolean confirm() {
+        if (status != ReservationStatus.ACTIVE) {
+            return false;
+        }
+        status = ReservationStatus.CONFIRMED;
+        return true;
+    }
+
+    public boolean cancel() {
+        if (status != ReservationStatus.ACTIVE) {
+            return false;
+        }
+        status = ReservationStatus.CANCELLED;
+        return true;
+    }
+
     public UUID getId() {
         return id;
     }
