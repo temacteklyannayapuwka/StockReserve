@@ -31,6 +31,17 @@ public class Product {
         this.quantity = quantity;
     }
 
+    public boolean reserve(int amount) {
+        if (amount <= 0) {
+            throw new IllegalArgumentException("Reservation quantity must be positive");
+        }
+        if (quantity < amount) {
+            return false;
+        }
+        quantity -= amount;
+        return true;
+    }
+
     public UUID getId() {
         return id;
     }
