@@ -7,6 +7,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.net.URI;
@@ -18,13 +19,20 @@ public class ReservationController {
 
     private final ReservationService reservations;
 
-    public ReservationController(ReservationService reservations) {
+    private final IdempotentReservationService idempotentReservations;
+
+    public ReservationController(ReservationService reservations, IdempotentReservationService idempotentReservations) {
         this.reservations = reservations;
+        this.idempotentReservations = idempotentReservations;
     }
 
     @PostMapping
-    public ResponseEntity<ReservationResponse> create(@Valid @RequestBody CreateReservationRequest request) {
-        var reservation = reservations.create(request);
+    public ResponseEntity<ReservationResponse> create(
+            @Valid @RequestBody CreateReservationRequest request,
+            @RequestHeader(value = "Idempotency-Key", required = false) String key) {
+        var reservation = key == null
+                ? reservations.create(request)
+                : idempotentReservations.create(key, request);
         return ResponseEntity.created(URI.create("/api/reservations/" + reservation.id())).body(reservation);
     }
 
