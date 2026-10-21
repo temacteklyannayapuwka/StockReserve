@@ -9,6 +9,7 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
 
+import java.time.Instant;
 import java.util.UUID;
 
 @Entity
@@ -32,14 +33,18 @@ public class Reservation {
     @Column(nullable = false, length = 20)
     private ReservationStatus status;
 
+    @Column(name = "expires_at", nullable = false)
+    private Instant expiresAt;
+
     protected Reservation() {
     }
 
-    public Reservation(UUID productId, UUID orderId, int quantity) {
+    public Reservation(UUID productId, UUID orderId, int quantity, Instant expiresAt) {
         this.productId = productId;
         this.orderId = orderId;
         this.quantity = quantity;
         this.status = ReservationStatus.ACTIVE;
+        this.expiresAt = expiresAt;
     }
 
     public boolean confirm() {
@@ -56,6 +61,22 @@ public class Reservation {
         }
         status = ReservationStatus.CANCELLED;
         return true;
+    }
+
+    public boolean isDue(Instant now) {
+        return status == ReservationStatus.ACTIVE && !expiresAt.isAfter(now);
+    }
+
+    public boolean expire(Instant now) {
+        if (!isDue(now)) {
+            return false;
+        }
+        status = ReservationStatus.EXPIRED;
+        return true;
+    }
+
+    public Instant getExpiresAt() {
+        return expiresAt;
     }
 
     public UUID getId() {
