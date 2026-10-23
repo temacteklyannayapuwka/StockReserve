@@ -1,0 +1,33 @@
+name: Publish release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: github.event.head_commit.message == 'Release StockReserve v1.0.0'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Check out source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Set up Java
+        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - name: Verify and package
+        run: mvn --batch-mode --no-transfer-progress clean verify
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create v1.0.0 target/stockreserve-1.0.0.jar \
+            --target "$GITHUB_SHA" \
+            --title "StockReserve v1.0.0" \
+            --notes "First stable release of StockReserve. Includes product management, concurrent stock reservations, reservation lifecycle and expiration, idempotent reservation requests, PostgreSQL persistence, and automated integration tests."

@@ -40,7 +40,7 @@ export DB_PASSWORD='local-password'
 
 ```bash
 mvn -DskipTests clean package
-java -jar target/stockreserve-0.0.1-SNAPSHOT.jar
+java -jar target/stockreserve-1.0.0.jar
 ```
 
 Создание товара:
